@@ -16,21 +16,11 @@ model_urls = {
 
 
 class SElayer(torch.nn.Module):
-    """
-    This block implements the Squeeze-and-Excitation block from https://arxiv.org/abs/1709.01507 (see Fig. 1).
-    Parameters ``activation``, and ``scale_activation`` correspond to ``delta`` and ``sigma`` in in eq. 3.
-    Args:
-        input_channels (int): Number of channels in the input image
-        squeeze_channels (int): Number of squeeze channels
-        activation (Callable[..., torch.nn.Module], optional): ``delta`` activation. Default: ``torch.nn.ReLU``
-        scale_activation (Callable[..., torch.nn.Module]): ``sigma`` activation. Default: ``torch.nn.Sigmoid``
-    """
-
     def __init__(
         self,
         input_channels: int,
         squeeze_channels: int,
-        activation: Callable[..., torch.nn.Module] = torch.nn.ReLU,
+        activation: Callable[..., torch.nn.Module] = torch.nn.ReLU(),
         scale_activation: Callable[..., torch.nn.Module] = torch.nn.Sigmoid,
     ) -> None:
         super().__init__()
@@ -80,7 +70,9 @@ class ConvBNReLU(nn.Sequential):
         kernel_size: int = 3,
         stride: int = 1,
         groups: int = 1,
+        dilation: int = 1,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
+        activation_layer: Optional[Callable[..., torch.nn.Module]] = torch.nn.ReLU(),
         iw: int = 0,
     ) -> None:
 
@@ -102,9 +94,9 @@ class ConvBNReLU(nn.Sequential):
             instance_norm_layer = nn.Sequential()
 
         super(ConvBNReLU, self).__init__(
-                nn.Conv2d(in_planes, out_planes, kernel_size, stride, padding, groups=groups, bias=False),
+                nn.Conv2d(in_planes, out_planes, kernel_size, stride, padding, dilation=dilation, groups=groups, bias=False),
                 norm_layer(out_planes),
-                nn.ReLU6(inplace=True),
+                activation_layer,
                 instance_norm_layer
             )
 
@@ -179,7 +171,7 @@ class InvertedResidual(nn.Module):
         self.iw = cnf.iw
         self.expand_ratio = cnf.expanded_channels
         layers: List[nn.Module] = []
-        activation_layer = nn.Hardswish if cnf.use_hs else nn.ReLU
+        activation_layer = nn.Hardswish() if cnf.use_hs else nn.ReLU()
 
         # expand
         if cnf.expanded_channels != cnf.input_channels:
@@ -306,7 +298,7 @@ class MobileNetV3(nn.Module):
                 kernel_size=3,
                 stride=2,
                 norm_layer=norm_layer,
-                activation_layer=nn.Hardswish,
+                activation_layer=nn.Hardswish(),
             )
         )
         feature_count = 0
@@ -331,7 +323,7 @@ class MobileNetV3(nn.Module):
                 lastconv_output_channels,
                 kernel_size=1,
                 norm_layer=norm_layer,
-                activation_layer=nn.Hardswish,
+                activation_layer=nn.Hardswish(),
             )
         )
 
