@@ -299,15 +299,16 @@ class DeepV3Plus(nn.Module):
         elif trunk == 'mobilenetv3':
             channel_1st = 3
             channel_2nd = 16
-            channel_3rd = 88
-            channel_4th = 96
+            channel_3rd = 24
+            channel_4th = 88
 
             # prev_final_channel = 288
-            prev_final_channel = 576
+            prev_final_channel = 96
 
-            final_channel = 1024
+            final_channel = 576
             resnet = MobilenetV3.mobilenet_v3(pretrained=True,
                     iw=self.args.wt_layer)
+            print(resnet)
             self.layer0 = nn.Sequential(resnet.features[0])
             self.layer1 = nn.Sequential(resnet.features[1], resnet.features[2])
             self.layer2 = nn.Sequential(resnet.features[3], resnet.features[4], resnet.features[5], resnet.features[6], resnet.features[7])
@@ -483,7 +484,7 @@ class DeepV3Plus(nn.Module):
             in_channel_list = [0, 0, 16, 32, 64, 320, 1280]
         elif trunk == 'mobilenetv3':
             self.three_input_layer = False
-            in_channel_list = [0, 0, 16, 88, 288, 576, 1024]
+            in_channel_list = [0, 0, 16, 88, 144, 576]
         else: # ResNet-50
             self.three_input_layer = False
             in_channel_list = [0, 0, 64, 256, 512, 1024, 2048]   # 8128, 32640, 130816

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-    # Example on Cityscapes
-     python -m torch.distributed.launch --nproc_per_node=2 train.py \
-        --dataset gtav \
-        --covstat_val_dataset gtav \
-        --val_dataset bdd100k cityscapes synthia mapillary \
+     python train.py \
+        --dataset cityscapes \
+        --covstat_val_dataset cityscapes \
+        --val_dataset cityscapes \
         --arch network.deepv3.DeepMobileNetV3PlusD \
         --city_mode 'train' \
         --lr_schedule poly \
@@ -17,7 +16,7 @@
         --scale_max 2.0 \
         --rrotate 0 \
         --max_iter 40000 \
-        --bs_mult 8 \
+        --bs_mult 1 \
         --gblur \
         --color_aug 0.5 \
         --wt_reg_weight 0.0 \

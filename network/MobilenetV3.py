@@ -15,13 +15,14 @@ model_urls = {
 }
 
 
-class SElayer(torch.nn.Module):
+class SqueezeExcitation(torch.nn.Module):
     def __init__(
         self,
         input_channels: int,
         squeeze_channels: int,
         activation: Callable[..., torch.nn.Module] = torch.nn.ReLU(),
         scale_activation: Callable[..., torch.nn.Module] = torch.nn.Sigmoid,
+        iw: int = 0
     ) -> None:
         super().__init__()
         self.avgpool = torch.nn.AdaptiveAvgPool2d(1)
@@ -29,40 +30,53 @@ class SElayer(torch.nn.Module):
         self.fc2 = torch.nn.Conv2d(squeeze_channels, input_channels, 1)
         self.activation = activation
         self.scale_activation = scale_activation()
+        self.iw = iw
+        if iw == 1:
+            self.instance_norm_layer = InstanceWhitening(squeeze_channels)
+        elif iw == 2:
+            self.instance_norm_layer = InstanceWhitening(squeeze_channels)
+        elif iw == 3:
+            self.instance_norm_layer = nn.InstanceNorm2d(squeeze_channels, affine=False)
+        elif iw == 4:
+            self.instance_norm_layer = nn.InstanceNorm2d(squeeze_channels, affine=True)
+        else:
+            self.instance_norm_layer = nn.Sequential()
 
-    def _scale(self, input: Tensor) -> Tensor:
-        scale = self.avgpool(input)
+    def _scale(self, inp):
+        scale = self.avgpool(inp)
         scale = self.fc1(scale)
         scale = self.activation(scale)
         scale = self.fc2(scale)
+        scale = self.instance_norm_layer(scale)
         return self.scale_activation(scale)
 
-    def forward(self, input: Tensor) -> Tensor:
-        scale = self._scale(input)
-        return scale * input
+    def forward(self, x_tuple):
+        if len(x_tuple) == 2:
+            x = x_tuple[0]
+            w_arr = x_tuple[1]
+        else:
+            print("error in SE")
+            return
+        scale = self._scale(x)
+        if self.iw >= 1:
+            if self.iw == 1 or self.iw == 2:
+                scale, w = self.instance_norm_layer(scale)
+                w_arr.append(w)
+            else:
+                scale = self.instance_norm_layer(scale)
+        return [scale * x, w_arr]
 
 
 def _make_divisible(v: float, divisor: int, min_value: Optional[int] = None) -> int:
-    """
-    This function is taken from the original tf repo.
-    It ensures that all layers have a channel number that is divisible by 8
-    It can be seen here:
-    https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet/mobilenet.py
-    :param v:
-    :param divisor:
-    :param min_value:
-    :return:
-    """
     if min_value is None:
         min_value = divisor
     new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
-    # Make sure that round down does not go down by more than 10%.
     if new_v < 0.9 * v:
         new_v += divisor
     return new_v
 
 
-class ConvBNReLU(nn.Sequential):
+class ConvNormActivation(nn.Sequential):
     def __init__(
         self,
         in_planes: int,
@@ -72,7 +86,7 @@ class ConvBNReLU(nn.Sequential):
         groups: int = 1,
         dilation: int = 1,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
-        activation_layer: Optional[Callable[..., torch.nn.Module]] = torch.nn.ReLU(),
+        activation_layer: Optional[Callable[..., torch.nn.Module]] = torch.nn.ReLU(inplace=True),
         iw: int = 0,
     ) -> None:
 
@@ -92,14 +106,21 @@ class ConvBNReLU(nn.Sequential):
             instance_norm_layer = nn.InstanceNorm2d(out_planes, affine=True)
         else:
             instance_norm_layer = nn.Sequential()
-
-        super(ConvBNReLU, self).__init__(
+        if activation_layer is None:
+            super(ConvNormActivation, self).__init__(
                 nn.Conv2d(in_planes, out_planes, kernel_size, stride, padding, dilation=dilation, groups=groups, bias=False),
+                norm_layer(out_planes),
+                instance_norm_layer
+            )
+        else:
+            super(ConvNormActivation, self).__init__(
+                nn.Conv2d(in_planes, out_planes, kernel_size, stride, padding, dilation=dilation, groups=groups,
+                          bias=False),
                 norm_layer(out_planes),
                 activation_layer,
                 instance_norm_layer
             )
-
+        self.instance_norm_layer = instance_norm_layer
 
     def forward(self, x_tuple):
         if len(x_tuple) == 2:
@@ -123,7 +144,7 @@ class ConvBNReLU(nn.Sequential):
         return [x, w_arr]
 
 
-Conv2dNormActivation = ConvBNReLU
+Conv2dNormActivation = ConvNormActivation
 
 
 class InvertedResidualConfig:
@@ -161,17 +182,18 @@ class InvertedResidual(nn.Module):
         self,
         cnf: InvertedResidualConfig,
         norm_layer: Callable[..., nn.Module],
-        se_layer: Callable[..., nn.Module] = partial(SElayer, scale_activation=nn.Hardsigmoid),
+        se_layer: Callable[..., nn.Module] = partial(SqueezeExcitation, scale_activation=nn.Hardsigmoid),
     ):
         super().__init__()
         if not (1 <= cnf.stride <= 2):
             raise ValueError("illegal stride value")
 
         self.use_res_connect = cnf.stride == 1 and cnf.input_channels == cnf.out_channels
+        self.cnf = cnf
         self.iw = cnf.iw
         self.expand_ratio = cnf.expanded_channels
         layers: List[nn.Module] = []
-        activation_layer = nn.Hardswish() if cnf.use_hs else nn.ReLU()
+        activation_layer = nn.Hardswish() if cnf.use_hs else nn.ReLU(inplace=True)
 
         # expand
         if cnf.expanded_channels != cnf.input_channels:
@@ -231,20 +253,25 @@ class InvertedResidual(nn.Module):
         else:
             print("error in invert residual forward path")
             return
-        if self.expand_ratio != 1:
+        if self.cnf.expanded_channels != self.cnf.input_channels:
+            print(self.conv[0])
             x_tuple = self.conv[0](x_tuple)
+            print(self.conv[1])
             x_tuple = self.conv[1](x_tuple)
-            conv_x = x_tuple[0]
-            w_arr = x_tuple[1]
-            conv_x = self.conv[2](conv_x)
-            conv_x = self.conv[3](conv_x)
+            print(self.conv[2])
+            x_tuple = self.conv[2](x_tuple)
+            if len(self.conv) >3:
+              x_tuple = self.conv[3](x_tuple)
         else:
+            print(self.conv[0])
             x_tuple = self.conv[0](x_tuple)
-            conv_x = x_tuple[0]
-            w_arr = x_tuple[1]
-            conv_x = self.conv[1](conv_x)
-            conv_x = self.conv[2](conv_x)
+            print(self.conv[1])
+            x_tuple = self.conv[1](x_tuple)
+            print(self.conv[2])
+            x_tuple = self.conv[2](x_tuple)
 
+        conv_x = x_tuple[0]
+        w_arr = x_tuple[1]
         if self.use_res_connect:
             x = x + conv_x
         else:
